@@ -1,0 +1,372 @@
+name: NG Templates workflow
+
+env:
+  REPO_URL: https://github.com
+
+on:
+  push:
+    branches: [ "main","develop","feature/*", "release/*" ]
+  pull_request:
+    branches: [ "main","develop", "release/*" ]
+
+  workflow_call:
+    inputs:
+      PUSH_ARTEFACT:
+        description: 'Activate push artefact step'
+        required: false
+        type: boolean
+        default: true
+      MAVEN_CLI_OPTS:
+        description: 'Options maven'
+        required: false
+        type: string
+        default: "-s /root/.m2/settings.xml --batch-mode"
+      PROJECT_REF:
+        description: 'Project reference'
+        required: false
+        type: string
+        default: "atos_digital_tmp"
+      ENVIRONMENT_APPROVED:
+        description: 'environment for manual approved '
+        required: false
+        type: string
+        default: "manual-approval"
+      BUILD_DOCKER_IMAGE:
+        description: 'Activate build and push image'
+        required: false
+        type: boolean
+        default: false
+      DOCKER_REGISTRY:
+        description: 'Host registry docker'
+        required: false
+        type: string
+      DOCKER_IMAGE_NAME:
+        description: 'Docker image name'
+        required: false
+        type: string
+      DOCKER_OWNER:
+        description: 'Docker image owner'
+        required: false
+        type: string
+    secrets:
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
+      MAVEN_PAT:
+        description: 'GitHub MAVEN_PAT'
+        required: true
+      DOCKER_REGISTRY_USER:
+        description: 'Host registry docker'
+        required: false
+      DOCKER_REGISTRY_PASSWORD:
+        description: 'Host registry docker'
+        required: false
+
+jobs:
+
+  test_and_verify:
+    name: 'Build project'
+    if: github.ref != 'refs/heads/develop' && !startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build with Maven
+        run: mvn ${{ inputs.MAVEN_CLI_OPTS }} clean verify
+    
+  build_and_test_and_deploy:
+    name: 'Build test and deploy'
+    if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Debug Filesystem
+        run: find . -name "package.json"
+      
+      - name: Debug deploy input
+        run: |
+          echo "Deploy: ${{ inputs.PUSH_ARTEFACT }}"
+          echo "branch: ${{ github.ref }}"
+
+      - name: Deploy to GitHub Packages
+        run: mvn ${{ inputs.MAVEN_CLI_OPTS }} clean deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }} # Assuming GITHUB_TOKEN has packages:write permission
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+
+      
+      - name: Check generated dist for runner
+        run: ls -l /workspace/dist
+        
+      - name: Temporarily save jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: /workspace/dist
+          retention-days: 1
+
+  release_project:
+    needs: build_and_test_and_deploy
+    name: 'Initialize release project'
+    if: (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/')) && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+      
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Initialize release project
+        run: |
+          echo "Initialize release project"
+  
+  gitflow:
+    needs: release_project
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: ${{ inputs.ENVIRONMENT_APPROVED }}
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: /root/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+            node-version: '20'  # Assure-toi d'utiliser une version compatible
+            cache: 'npm'
+                
+      - name: Vérifier les permissions
+        run: chmod +w package.json package-lock.json
+      
+      - name: Build authenticated repository URL
+        run: |
+          REPO_URL="https://${{ secrets.GITHUB_USERNAME }}:${{ secrets.CUSTOM_GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          echo "Authenticated repository URL: $REPO_URL"
+          echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV 
+
+      - name: Set safe directory
+        run: |
+          git config --global --add safe.directory /workspace
+          git config --global --add safe.directory ${{ github.workspace }}
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+      
+
+      - name: Configure git
+        run: |
+          git remote set-url --push origin "${{ env.REPO_URL}}"
+          git config user.name "${{ secrets.GITHUB_USERNAME }}"
+          git config user.email technicaluser@atos.net
+          git config -l
+          git checkout "${{ github.ref_name }}"
+
+      - name: Create release branch
+        run: mvn ${{ inputs.MAVEN_CLI_OPTS }} tmp:create-release-branch
+        env:
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  gitflow-release:
+    needs: release_project
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.ENVIRONMENT_APPROVED }}
+    if: startsWith(github.ref, 'refs/heads/release/')
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: /root/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' 
+          cache: 'npm'
+                
+      - name: Vérifier les permissions
+        run: chmod +w package.json package-lock.json
+
+      - name: Create release branch
+        run: mvn ${{ inputs.MAVEN_CLI_OPTS }} tmp:release
+        env:
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  docker-build-prepare:
+    name: 'Docker build prepare'
+    needs: build_and_test_and_deploy
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      # Getting version pom
+      - name: Extract version from pom.xml
+        if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
+        id: extract-version
+        run: |
+          version=$(xmllint --xpath "//*[local-name()='project']/*[local-name()='version']/text()" pom.xml)
+          echo "Extracted version: $version"
+          echo "VERSION=$version" >> $GITHUB_ENV
+          echo "$version" > version.txt  # Crée le fichier version.txt
+    
+      - name: Upload version
+        if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
+        uses: actions/upload-artifact@v4
+        with:
+          name: version
+          path: version.txt
+      # ENd Getting version pom
+
+       # Getting artefact pom
+      - name: Extract artifactId from pom.xml
+        if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
+        id: extract-artifactid
+        run: |
+          artifactId=$(xmllint --xpath "//*[local-name()='project']/*[local-name()='artifactId']/text()" pom.xml)
+          echo "Extracted artifactId: $artifactId"
+          echo "ARTIFACT_ID=$artifactId" >> $GITHUB_ENV
+          echo "$artifactId" > artifactId.txt  # Crée le fichier artifactId.txt
+        
+      - name: Upload artifactId
+        if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifactid
+          path: artifactId.txt
+      # ENd Getting artefact pom
+
+  build-and-push-image:
+    env:
+      DOCKER_IMAGE_NAME: 
+      DOCKER_OWNER:
+      VERSION:
+    needs: docker-build-prepare
+    name: 'Build and publish image'
+    runs-on: ubuntu-latest
+    # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dowload dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: ./
+  
+      - name: Check if dist exists
+        run: ls -l ./
+
+      - name: Download version artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: version 
+          path: ./
+      
+      - name: Read version
+        id: read-version
+        run: |
+          version=$(cat version.txt)
+          echo "Version téléchargée : $version"
+          echo "VERSION=$version" >> $GITHUB_ENV 
+
+      - name: Use version
+        run: echo "La version récupérée est $VERSION"
+
+      - name: Download artifactId
+        uses: actions/download-artifact@v4
+        with:
+          name: artifactid
+          path: ./ 
+
+      - name: Debug downloaded files
+        run: |
+          echo "List of files in current directory:"
+          ls -l
+          cat artifactId.txt
+          cat ./artifactId.txt
+          echo "Contents of artifactId.txt:"
+          cat artifactId.txt
+        
+      - name: Read artifactId
+        run: |
+          artifactId=$(cat artifactId.txt)
+          echo "ArtifactId téléchargée : $artifactId"
+          echo "ARTIFACT_ID=$artifactId" >> $GITHUB_ENV 
+      
+      - name: Use artifactId
+        run: echo "Artifact récupéré est $ARTIFACT_ID"
+        
+      - name: Configurer les variables d’environnement
+        run: |
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          if [ -z "${{ inputs.DOCKER_IMAGE_NAME }}" ] || [ "${{ inputs.DOCKER_IMAGE_NAME }}" == "null" ]; then
+            echo "DOCKER_IMAGE_NAME=$ARTIFACT_ID:$VERSION" >> $GITHUB_ENV
+          else
+            echo "DOCKER_IMAGE_NAME=${{ inputs.DOCKER_IMAGE_NAME }}" >> $GITHUB_ENV
+          fi
+          if [ -z "${{ inputs.DOCKER_OWNER }}" ]  || [ "${{ inputs.DOCKER_OWNER }}" == "null" ]; then
+            echo "DOCKER_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          else
+            echo "DOCKER_OWNER=${{ inputs.DOCKER_OWNER }}" >> $GITHUB_ENV
+          fi
+
+      - name: Use Image name
+        run: echo "Image  est ${{ env.DOCKER_OWNER }}/${{ env.DOCKER_IMAGE_NAME }}"
+
+      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ inputs.DOCKER_REGISTRY }}/${{ env.DOCKER_OWNER }}/${{ env.DOCKER_IMAGE_NAME }}
+          labels: |
+            version=${{ env.VERSION }}
+            maintainer=${{ secrets.DOCKER_REGISTRY_USER }}
