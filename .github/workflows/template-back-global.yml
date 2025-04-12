@@ -28,7 +28,7 @@ on:
         type: string
       version_fallback:
         description: 'Docker image name'
-        required: true
+        required: false
         type: string
         default: '1.0.0'
       environment_approved:
@@ -36,6 +36,16 @@ on:
         required: false
         type: string
         default: "manual-approval"
+      build_maven:
+        description: 'Enabled to build maven'
+        required: false
+        type: boolean
+        default: false
+      build_image:
+        description: 'Enabled to build docker image'
+        required: false
+        type: boolean
+        default: false
     secrets:
       docker_registry_user:
         description: 'User registry docker'
@@ -52,8 +62,15 @@ on:
       MAVEN_PAT:
         description: 'GitHub MAVEN_PAT'
         required: true
+      MAVEN_SETTINGS:
+        description: 'Maven settings'
+        required: false
+      MAVEN_SETTINGS_SECURITY:
+        description: 'Maven settings security'
+        required: false
 
 jobs:
+
   #  job executé uniquement si c’est un pull Request venant d’une branche hotfix/*
   # ou d'un push si ce n’est pas sur develop, release/*, support/*, hotfix/*
   maven_test_build:
@@ -69,27 +86,51 @@ jobs:
     with:
       maven_test_only: true
       maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+    secrets:
       GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
-      CUSTOM_GITHUB_TOKEN: ${{ secrets.MAVEN_PAT }}
-      MAVEN_PAT: ${{ secrets.MAVEN_PAT }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
 
   # Branche develop, et que l'événement est un push normal (pas via API, planificateur ou appel)
   # ou branche de type release/*, sans condition sur l’événement.
   maven_build:
     name: Maven build
     if: |
-      (github.ref == 'refs/heads/develop' &&  github.event_name != 'repository_dispatch' &&  github.event_name != 'schedule') ||
-      startsWith(github.ref, 'refs/heads/release/') ||
-      (startsWith(github.ref, 'refs/heads/hotfix/') && github.event_name == 'workflow_dispatch')
+      (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_maven == true &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            startsWith(github.ref, 'refs/heads/release/') ||
+            startsWith(github.ref, 'refs/heads/hotfix/')
+          )
+        ) ||
+        (
+          github.event_name != 'workflow_dispatch' &&
+          (
+            github.ref == 'refs/heads/develop' &&
+            github.event_name != 'repository_dispatch' &&
+            github.event_name != 'schedule' ||
+            startsWith(github.ref, 'refs/heads/release/') ||
+            startsWith(github.ref, 'refs/heads/hotfix/')
+          )
+        )
+      )
     uses: ./.github/workflows/maven-build-template.yml
     with:
       maven_test_only: false
       maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+    secrets:
       GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
-      CUSTOM_GITHUB_TOKEN: ${{ secrets.MAVEN_PAT }}
-      MAVEN_PAT: ${{ secrets.MAVEN_PAT }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
 
   docker_build_push:
+    if: |
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.build_image == true
+      ) ||
+      github.event_name != 'workflow_dispatch'
     name: Docker build and push
     needs: maven_build
     uses: ./.github/workflows/jobs-docker.yml
@@ -102,72 +143,3 @@ jobs:
     secrets:
       docker_registry_user: ${{ secrets.docker_registry_user }}
       docker_registry_password: ${{ secrets.docker_registry_password }}
-
-  generate-doc:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
-
-    if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/develop' &&
-      env.DOC_GEN_MODE != 'NONE' &&
-      github.event_name != 'repository_dispatch' &&
-      github.event_name != 'workflow_dispatch' &&
-      github.event_name != 'schedule'
-    continue-on-error: true
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Configurer les paramètres Maven
-      - name: Setup Maven settings
-        uses: ./.github/actions/setup-mvn
-        env:
-          MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
-          MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
-
-      - name: Extract project name
-        id: project
-        run: |
-          NAME=$(mvn ${{ env.MAVEN_CLI_OPTS }} -B org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.name | grep -vP '^\[' | sed 's/-parent$//g')
-          echo "project_name=$NAME" >> $GITHUB_OUTPUT
-
-      - name: Generate documentation
-        run: |
-          if [ "${DOC_GEN_MODE}" = "SWAGGER" ]; then
-            mvn ${{ env.MAVEN_CLI_OPTS }} test -Pdoc-generation
-          else
-            mvn ${{ env.MAVEN_CLI_OPTS }} -B clean process-resources
-          fi
-
-      - name: Prepare documentation for GitHub Pages
-        run: |
-          mkdir -p public
-          DOC_PATH="${{ steps.project.outputs.project_name }}/target/asciidoc/html"
-          if [ -d "$DOC_PATH" ]; then
-            mv -f $DOC_PATH/* public
-          else
-            echo "Skipping: no documentation to process"
-          fi
-
-      - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v1
-        with:
-          path: ./public
-
-  deploy-doc:
-    needs: generate-doc
-    if: success()
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v2

@@ -18,6 +18,13 @@ on:
       GITHUB_USERNAME:
         description: 'GitHub username for authentication'
         required: true
+      MAVEN_SETTINGS:
+        description: 'Maven settings'
+        required: false
+      MAVEN_SETTINGS_SECURITY:
+        description: 'Maven settings security'
+        required: false
+
 
 jobs:
   maven_build:
@@ -29,13 +36,16 @@ jobs:
         - ${{ github.workspace }}:/workspace
 
     steps:
-      - name: Checkout code
+
+      - name: Checkout current repo
         uses: actions/checkout@v4
 
       # Configurer les paramètres Maven
       - name: Setup Maven settings
-        uses: ./.github/actions/setup-mvn
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/setup-mvn@main
         env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
           MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
           MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
 
@@ -49,10 +59,19 @@ jobs:
           fi
 
       - name: Run Maven
-        run: mvn ${{ inputs.maven_cli_opts }} -B ${{ steps.goals.outputs.goal }}  || exit 1
+        run: |
+          ls /root/.m2/
+          cat /root/.m2/settings.xml
+          mvn ${{ inputs.maven_cli_opts }} -B ${{ steps.goals.outputs.goal }}  || exit 1
         env:
           GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
           GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+
+      - name: Check generated JAR for runner
+        run: |
+          pwd
+          ls -al /workspace
+          ls -al /workspace/test-deploy
 
       - name: Clean artifacts
         if: ${{ inputs.maven_test_only == true }}
@@ -61,7 +80,10 @@ jobs:
           echo "✅ Fichiers .jar supprimés"
 
       - name: Check generated JAR for runner
-        run: ls -l /workspace/target/
+        run: |
+          pwd
+          ls -al /workspace
+          ls -al /workspace/test-deploy
 
       - name: Temporarily save jar artifact
         if: ${{ inputs.maven_test_only == false }}

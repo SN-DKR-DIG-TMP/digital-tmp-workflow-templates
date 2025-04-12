@@ -1,9 +1,12 @@
 # .github/actions/setup-mvn/action.yml
 name: Override Maven settings if MAVEN_SETTINGS is defined
 description: Creates Maven settings.xml from environment
+
+
 runs:
   using: "composite"
   steps:
+
     - name: Setup Maven settings
       run: |
         if [ -n "${MAVEN_SETTINGS}" ]; then
@@ -21,6 +24,3 @@ runs:
           echo "ℹ️ MAVEN_SETTINGS_SECURITY not set, skipping override"
         fi
       shell: bash
-      env:
-        MAVEN_SETTINGS: ${{ env.MAVEN_SETTINGS }}
-        MAVEN_SETTINGS_SECURITY: ${{ env.MAVEN_SETTINGS_SECURITY }}

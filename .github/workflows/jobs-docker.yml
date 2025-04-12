@@ -9,29 +9,28 @@ on:
       - '**'  # écouter toutes les PR
   workflow_call:
     inputs:
-      inputs:
-        docker_registry:
-          description: 'Host registry docker'
-          required: true
-          type: string
-        docker_owner:
-          description: 'Owner docker'
-          required: true
-          type: string
-        docker_image_name:
-          description: 'Docker image name'
-          required: true
-          type: string
-        version_fallback:
-          description: 'Docker image name'
-          required: true
-          type: string
-          default: '1.0.0'
-        environment_approved:
-          description: 'environment for manual approved '
-          required: false
-          type: string
-          default: "manual-approval"
+      docker_registry:
+        description: 'Host registry docker'
+        required: true
+        type: string
+      docker_owner:
+        description: 'Owner docker'
+        required: true
+        type: string
+      docker_image_name:
+        description: 'Docker image name'
+        required: true
+        type: string
+      version_fallback:
+        description: 'Docker image name'
+        required: true
+        type: string
+        default: '1.0.0'
+      environment_approved:
+        description: 'environment for manual approved '
+        required: false
+        type: string
+        default: "manual-approval"
     secrets:
       docker_registry_user:
         description: 'User registry docker'
@@ -59,6 +58,10 @@ jobs:
   docker-build-prepare:
     runs-on: ubuntu-latest
     needs: docker_build_project
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
     if: |
       (github.ref == 'refs/heads/develop' && github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') ||
       startsWith(github.ref, 'refs/heads/release/')
@@ -68,9 +71,19 @@ jobs:
       full_image_name: ${{ steps.meta.outputs.full_image_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Upload entrypoint.sh
+        uses: actions/upload-artifact@v4
+        with:
+          name: entrypoint-file
+          path: /usr/local/bin/entrypoint.sh
+
       - name: "Exécuter l'extracteur Maven et Builder d'Images Docker"
-        uses: ./.github/actions/pom-variables
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/pom-variables@main
         id: meta
+        env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
         with:
           DOCKER_IMAGE_NAME: ${{ inputs.docker_image_name }}
           IMAGE_REGISTRY: ${{ inputs.docker_registry }}/${{ inputs.docker_owner }}
@@ -90,9 +103,19 @@ jobs:
       full_image_name: ${{ steps.meta.outputs.full_image_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Upload entrypoint.sh
+        uses: actions/upload-artifact@v4
+        with:
+          name: entrypoint-file
+          path: /usr/local/bin/entrypoint.sh
+
       - name: "Exécuter l'extracteur Maven et Builder d'Images Docker"
-        uses: ./.github/actions/pom-variables
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/pom-variables@main
         id: meta
+        env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
         with:
           DOCKER_IMAGE_NAME: ${{ inputs.docker_image_name }}
           IMAGE_REGISTRY: ${{ inputs.docker_registry }}/${{ inputs.docker_owner }}
@@ -105,27 +128,23 @@ jobs:
       (github.ref == 'refs/heads/develop' && github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') ||
       startsWith(github.ref, 'refs/heads/release/')
     steps:
+      - uses: actions/checkout@v4
+
+      - name: "Gerer les artifact pour builder l'image"
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/docker-prepare-artifact@main
+
       - name: Use Image name
-        run: echo "Image  est ${{ needs.docker-build-prepare.outputs.registry_img_name }}"
+        run: |
+          echo "Image  est ${{ needs.docker-build-prepare.outputs.registry_img_name }}"
 
-      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
+      - name: "Gerer les artifact pour builder l'image"
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/build-and-push-image@main
         with:
-          registry: ${{ inputs.docker_registry }}
-          username: ${{ secrets.docker_registry_user }}
-          password: ${{ secrets.docker_registry_password }}
+          docker_registry: ${{ inputs.docker_registry }}
+          docker_registry_user: ${{ secrets.docker_registry_user }}
+          docker_registry_password: ${{ secrets.docker_registry_password }}
+          full_image_name: ${{ needs.docker-build-prepare.outputs.registry_img_name }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ needs.docker-build-prepare.outputs.registry_img_name }}
-          labels: |
-            version=${{ needs.docker-build-prepare.outputs.img_version }}
-            maintainer=${{ secrets.docker_registry_user }}
 
   snapshot-docker-build-and-push-image:
     runs-on: ubuntu-latest
@@ -136,24 +155,19 @@ jobs:
       startsWith(github.ref, 'refs/heads/feature/') ||
       startsWith(github.ref, 'refs/heads/future/')
     steps:
+      - uses: actions/checkout@v4
+
+      - name: "Gerer les artifact pour builder l'image"
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/docker-prepare-artifact@main
+
       - name: Use Image name
-        run: echo "Image  est ${{ needs.docker-build-prepare.outputs.registry_img_name }}"
+        run: |
+          echo "Image  est ${{ needs.docker-build-prepare.outputs.registry_img_name }}"
 
-      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
+      - name: "Gerer les artifact pour builder l'image"
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/build-and-push-image@main
         with:
-          registry: ${{ inputs.docker_registry }}
-          username: ${{ secrets.docker_registry_user }}
-          password: ${{ secrets.docker_registry_password }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ needs.docker-build-prepare.outputs.registry_img_name }}
-          labels: |
-            version=${{ needs.docker-build-prepare.outputs.img_version }}
-            maintainer=${{ secrets.docker_registry_user }}
+          docker_registry: ${{ inputs.docker_registry }}
+          docker_registry_user: ${{ secrets.docker_registry_user }}
+          docker_registry_password: ${{ secrets.docker_registry_password }}
+          full_image_name: ${{ needs.docker-build-prepare.outputs.registry_img_name }}
