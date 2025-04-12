@@ -1,0 +1,7 @@
+name: JS Build
+description: Install deps and build Angular
+runs:
+  using: "composite"
+  steps:
+    - run: npm install --force
+    - run: npm run ng build --configuration=production

@@ -1,0 +1,72 @@
+name: Maven Build Template
+
+on:
+  workflow_call:
+    inputs:
+      maven_test_only:
+        required: false
+        type: boolean
+        default: false
+      maven_cli_opts:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
+
+jobs:
+  maven_build:
+    name: Maven ${{ inputs.maven_test_only && 'Test' || 'Deploy' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Configurer les paramètres Maven
+      - name: Setup Maven settings
+        uses: ./.github/actions/setup-mvn
+        env:
+          MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+          MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
+
+      - name: Determine Maven Goals
+        id: goals
+        run: |
+          if ${{ inputs.maven_test_only }}; then
+            echo "goal=clean test" >> $GITHUB_OUTPUT
+          else
+            echo "goal=clean deploy" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Maven
+        run: mvn ${{ inputs.maven_cli_opts }} -B ${{ steps.goals.outputs.goal }}  || exit 1
+        env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+
+      - name: Clean artifacts
+        if: ${{ inputs.maven_test_only == true }}
+        run: |
+          find ./**/target* -name "*.jar" -delete
+          echo "✅ Fichiers .jar supprimés"
+
+      - name: Check generated JAR for runner
+        run: ls -l /workspace/target/
+
+      - name: Temporarily save jar artifact
+        if: ${{ inputs.maven_test_only == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-artifact
+          path: '**/target/*.jar'
+          retention-days: 1
