@@ -1,0 +1,226 @@
+name: 🚀 Vérification et démarrage de la release
+
+on:
+  workflow_call:
+    inputs:
+      workflow_file:
+        description: 'Nom du fichier du workflow'
+        required: false
+        default: 'build.yml'
+        type: string
+      maven_cli_opts:
+        description: Options for Maven CLI
+        required: false
+        default: ""
+        type: string
+      environment_approved:
+        description: Environment pour lancer le job
+        required: false
+        default: "none"
+        type: string
+      enabled_verification_changelog:
+        description: 'Activer ou désactiver la vérification'
+        required: false
+        type: boolean
+        default: false
+      versioning_format:
+        description: 'Format de version'
+        required: false
+        type: string
+        default: '9.9.9'
+    secrets:
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
+      MAVEN_SETTINGS:
+        description: 'Maven settings'
+        required: false
+      MAVEN_SETTINGS_SECURITY:
+        description: 'Maven settings security'
+        required: false
+jobs:
+  hotfix-merge:
+    name: Merger la branche hotfix
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_approved }}
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+
+    steps:
+
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name:  Configurer Git
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/config-git@main
+        with:
+          github_username: ${{ secrets.GITHUB_USERNAME }}
+          github_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+      - name: Merge hotfix into base branch
+        run: |
+          echo "Release hotfix on branch ${{ github.head_ref }}"
+          git fetch origin
+          git checkout ${{ github.head_ref }}
+          git checkout ${{ github.base_ref }}
+          git merge --no-ff -m "Pending merge" ${{ github.head_ref }}
+          echo "Merged ${{ github.head_ref }} into ${{ github.base_ref }}"
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo " Merge conflict detected!"
+            git status
+            exit 1
+          fi
+
+      # Configurer les paramètres Maven
+      - name: Setup Maven settings
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/setup-mvn@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+          MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+          MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
+
+      - name: Récupérer la version du module
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/get-maven-version@main
+        id: get-maven-version
+        with:
+          maven_cli_opts: ${{ inputs.maven_cli_opts }}
+
+      - name: Définir la version Maven dans une variable d'environnement
+        run: echo "PROJECT_VERSION=${{ steps.get-maven-version.outputs.version }}" >> $GITHUB_ENV
+
+      - name: Récupérer la version patch du module
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/up-project-patch-version@main
+        id: up-project-patch-version
+        with:
+          project_version: ${{ env.PROJECT_VERSION }}
+          versioning_format: ${{ inputs.versioning_format }}
+
+      - name: Définir la version patch Maven dans une variable d'environnement
+        run: echo "PROJECT_VERSION=${{ steps.up-project-patch-version.outputs.updated_version }}" >> $GITHUB_ENV
+
+      - name: Appliquer nouvelle version patch
+        run: |
+          mvn ${{ inputs.maven_cli_opts }} -B build-helper:parse-version org.codehaus.mojo:versions-maven-plugin:2.11.0:set -DnewVersion=${{ env.PROJECT_VERSION }} org.codehaus.mojo:versions-maven-plugin:2.11.0:commit
+
+      - name: Mise à jour des fichiers package*.json avec la version patch du projet
+        run: |
+          for package_file in $(find . -type f -name 'package*.json'); do
+            sed -i -e "1,/version/s#\(\"version\"\)\(:.*\)\(\"\)\(.*\)\(\"\)#\1\2\"${NEW_PROJECT_VERSION}\"#1" ${package_file}
+          done
+        shell: bash
+
+      - name: Verifier si le fichier CHANGELOG.md a changé
+        if: inputs.enabled_verification_changelog == true
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...origin/${{ github.head_ref }} | grep -q "CHANGELOG.md"; then
+            echo "CHANGELOG must remain unchanged!"
+            exit 1
+          fi
+
+      - name: Mettre à jour automatiquement le changelog depuis la Pull Request
+        if: inputs.enabled_verification_changelog == true
+        shell: bash
+        run: |
+          echo "Branche source : ${{ github.head_ref }}"
+
+          BRANCH_NAME="${{ github.head_ref }}"
+
+          # Extraire les informations projet / JIRA depuis le nom de branche
+          PROJECT=$(echo "$BRANCH_NAME" | cut -d'/' -f2 | cut -d'-' -f1)
+          JIRA=$(echo "$BRANCH_NAME" | cut -d'-' -f2)
+          echo "PROJECT: $PROJECT"
+          echo "JIRA: $JIRA"
+
+          # Titre de la PR (fourni automatiquement dans l'événement)
+          TITLE="${{ github.event.pull_request.title }}"
+          echo "Titre brut : $TITLE"
+
+          # Nettoyer le gitmoji si présent
+          TITLE_WITHOUT_GITMOJI=$(echo "$TITLE" | sed 's/^[ ]*:[a-z_0-9]*:[ ]*//g')
+          echo "Titre nettoyé : $TITLE_WITHOUT_GITMOJI"
+
+          # Nettoyer le gitmoji si présent
+          TITLE_WITHOUT_GITMOJI=$(echo "$TITLE" | sed 's/^[ ]*:[a-z_0-9]*:[ ]*//g')
+          echo "Titre nettoyé : $TITLE_WITHOUT_GITMOJI"
+
+          # Créer le changelog
+          changelog-cli log fix "${TITLE_WITHOUT_GITMOJI} ([$JIRA](https://msdevopsjira.fsc.atos-services.net/browse/$PROJECT-$JIRA))"
+          changelog-cli release "${{ env.PROJECT_VERSION }}"
+
+        env:
+          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
+
+      - name: Commit final et push
+        shell: bash
+        run: |
+          git commit -a --amend -m "release ${PROJECT_VERSION}"
+          git push origin ${{ github.base_ref }} --force-with-lease
+        env:
+          PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
+
+  trigger-target-branch:
+    if: startsWith(github.head_ref, 'hotfix') && github.base_ref != 'develop'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    needs: hotfix-merge
+    steps:
+      - name: Pause pour un moment
+        run: sleep 2
+
+      - name: Lancer la pipeline sur la branche cible
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/trigger-workflow@main
+        with:
+          api_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          workflow_file: ${{ inputs.workflow_file }}
+          branch_name: ${{ github.base_ref }}
+          product_release_version: ''
+          build_maven: true
+          build_image: true
+          released: false
+
+  delete-hotfix-branch:
+    runs-on: ubuntu-latest
+    needs: trigger-target-branch
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Supprimer la branche hotfix
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Deleting branch: $SOURCE_BRANCH"
+
+          # Ensure the PR was merged before deleting
+          if [ "${{ github.event.pull_request.merged }}" != "true" ]; then
+            echo "Pull request was not merged. Skipping branch deletion."
+            exit 0
+          fi
+
+          # Delete branch from origin
+          curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs/heads/$SOURCE_BRANCH

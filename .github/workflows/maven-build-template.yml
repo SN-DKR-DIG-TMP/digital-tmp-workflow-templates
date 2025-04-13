@@ -11,6 +11,10 @@ on:
         required: false
         type: string
         default: ''
+      maven_goal:
+        required: false
+        type: string
+        default: 'test'
     secrets:
       CUSTOM_GITHUB_TOKEN:
         description: 'GitHub token for authentication'
@@ -55,7 +59,7 @@ jobs:
           if ${{ inputs.maven_test_only }}; then
             echo "goal=clean test" >> $GITHUB_OUTPUT
           else
-            echo "goal=clean deploy" >> $GITHUB_OUTPUT
+            echo "goal=clean ${{ inputs.maven_goal }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Maven
@@ -71,24 +75,67 @@ jobs:
         run: |
           pwd
           ls -al /workspace
-          ls -al /workspace/test-deploy
 
       - name: Clean artifacts
         if: ${{ inputs.maven_test_only == true }}
+        shell: bash
         run: |
-          find ./**/target* -name "*.jar" -delete
-          echo "✅ Fichiers .jar supprimés"
+          echo "Liste des fichiers .jar avant suppression :"
+          jars=($(find . -type f -path "*/target/*.jar"))
 
-      - name: Check generated JAR for runner
+          if [ ${#jars[@]} -gt 0 ]; then
+            echo ""
+            echo "Noms des fichiers trouvés :"
+            printf '%s\n' "${jars[@]}" | xargs -n1 basename
+
+            echo ""
+            echo "Suppression en cours..."
+            rm -f "${jars[@]}"
+            echo "${#jars[@]} fichiers .jar supprimés"
+          else
+            echo "Aucun fichier .jar trouvé"
+          fi
+
+
+      - name: Check for .jar files
+        id: check_jars
+        shell: bash
         run: |
-          pwd
-          ls -al /workspace
-          ls -al /workspace/test-deploy
+          echo "Liste des fichiers .jar avant suppression :"
+          jars=($(find . -type f -path "*/target/*.jar"))
+          if [ ${#jars[@]} -gt 0 ]; then
+            echo ""
+            echo "Noms des fichiers trouvés :"
+            printf '%s\n' "${jars[@]}" | xargs -n1 basename
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Aucun fichier .jar trouvé"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Temporarily save jar artifact
         if: ${{ inputs.maven_test_only == false }}
         uses: actions/upload-artifact@v4
         with:
           name: jar-artifact
-          path: '**/target/*.jar'
+          path: |
+            **/target/*.jar
+            target/*.jar
+          retention-days: 1
+
+      - name: Check if /workspace/dist exists
+        id: check_dist
+        run: |
+          if [ -d "/workspace/dist" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Temporarily save dist artifact
+        if: steps.check_dist.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: /workspace/dist
           retention-days: 1

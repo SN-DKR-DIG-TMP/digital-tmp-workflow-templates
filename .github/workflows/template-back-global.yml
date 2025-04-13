@@ -1,4 +1,4 @@
-name: Maven Test Only for Feature Branches
+name: Pipeline TMP
 
 on:
   push:
@@ -31,6 +31,10 @@ on:
         required: false
         type: string
         default: '1.0.0'
+      project_name:
+        description: 'Project name'
+        required: false
+        type: string
       environment_approved:
         description: 'environment for manual approved '
         required: false
@@ -46,6 +50,36 @@ on:
         required: false
         type: boolean
         default: false
+      docker_build:
+        description: "Activation ou desactivation de build docker pour gerer les dependances qui n'ont pas besoin de builder une image"
+        required: false
+        type: boolean
+        default: true
+      workflow_file:
+        description: 'Nom du fichier du workflow'
+        required: false
+        default: 'build.yml'
+        type: string
+      versioning_format:
+        description: 'Format de version'
+        required: false
+        type: string
+        default: '9.9.9'
+      enabled_verification_changelog:
+        description: 'Activer ou désactiver la vérification'
+        required: false
+        type: boolean
+        default: false
+      PRODUCT_RELEASE_VERSION:
+        description: Version du projet à releaser
+        required: false
+        type: string
+        default: ""
+      released:
+        description: Indiquer si la release doit etre lancer
+        required: false
+        default: false
+        type: boolean
     secrets:
       docker_registry_user:
         description: 'User registry docker'
@@ -71,17 +105,66 @@ on:
 
 jobs:
 
+  check-variables:
+    name: Vérification des variables
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Afficher les infos de contexte
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.ref: ${{ github.ref }}"
+          echo "inputs.build_image: ${{ inputs.build_image }}"
+          echo "inputs.build_maven: ${{ inputs.build_maven }}"
+          echo "inputs.released: ${{ inputs.released }}"
+          echo "branch name: ${{ github.ref_name }}"
+          echo "environment_approved: ${{ inputs.environment_approved }}"
+
+      - name: Check environment approval protection
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/check-environment-approval@main
+        with:
+          github_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          env_name: ${{ inputs.environment_approved }}
+
+  check_changelog:
+    needs: check-variables
+    name: check_changelog
+    uses: ./.github/workflows/changelog-verification.yml
+    with:
+      versioning_format: ${{ inputs.versioning_format }}
+      enabled_verification_changelog: ${{ inputs.enabled_verification_changelog }}
+
   #  job executé uniquement si c’est un pull Request venant d’une branche hotfix/*
   # ou d'un push si ce n’est pas sur develop, release/*, support/*, hotfix/*
   maven_test_build:
+    needs: check_changelog
     name: Maven build test
     if: |
-      (github.event_name == 'pull_request' && startsWith(github.head_ref || '', 'hotfix')) ||
-      (github.event_name == 'push' &&
-      github.ref != 'refs/heads/develop' &&
-      !startsWith(github.ref, 'refs/heads/release/') &&
-      !startsWith(github.ref, 'refs/heads/support/') &&
-      !startsWith(github.ref, 'refs/heads/hotfix/'))
+      (
+        github.event_name == 'pull_request' &&
+        (
+          startsWith(github.head_ref, 'hotfix/') ||
+          startsWith(github.head_ref, 'feature/') ||
+          startsWith(github.head_ref, 'future/')
+        )
+      ) ||
+      (
+        github.event_name == 'push' &&
+        github.ref != 'refs/heads/develop' &&
+        !startsWith(github.ref, 'refs/heads/release/') &&
+        !startsWith(github.ref, 'refs/heads/support/') &&
+        !startsWith(github.ref, 'refs/heads/hotfix/')
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.build_maven == true &&
+        (
+          startsWith(github.ref, 'refs/heads/hotfix/') ||
+          startsWith(github.ref, 'refs/heads/feature/') ||
+          startsWith(github.ref, 'refs/heads/future/')
+        )
+      )
     uses: ./.github/workflows/maven-build-template.yml
     with:
       maven_test_only: true
@@ -89,48 +172,95 @@ jobs:
     secrets:
       GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
       CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+      MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+      MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
 
   # Branche develop, et que l'événement est un push normal (pas via API, planificateur ou appel)
   # ou branche de type release/*, sans condition sur l’événement.
+  # ou c'est un lancement manuel et que la variable build_maven est vrai et c'est une branche de type release, hotfix, feature ou future
+  # le goal est egale à install si c'est une action manuelle et build_maven est vrai et que la branche est feature, future. Pas besoin de déployer l'artifact sur github package
+  # le goal est deploy si la branche est develop, release ou hotfix
   maven_build:
     name: Maven build
+    needs: check_changelog
     if: |
       (
-        (
           github.event_name == 'workflow_dispatch' &&
           inputs.build_maven == true &&
           (
             github.ref == 'refs/heads/develop' ||
-            startsWith(github.ref, 'refs/heads/release/') ||
-            startsWith(github.ref, 'refs/heads/hotfix/')
+            startsWith(github.ref, 'refs/heads/release/')
           )
-        ) ||
+      ) ||
+      (
+        github.event_name != 'workflow_dispatch' &&
         (
-          github.event_name != 'workflow_dispatch' &&
-          (
-            github.ref == 'refs/heads/develop' &&
-            github.event_name != 'repository_dispatch' &&
-            github.event_name != 'schedule' ||
-            startsWith(github.ref, 'refs/heads/release/') ||
-            startsWith(github.ref, 'refs/heads/hotfix/')
-          )
+          github.ref == 'refs/heads/develop' ||
+          startsWith(github.ref, 'refs/heads/release/')
         )
       )
     uses: ./.github/workflows/maven-build-template.yml
     with:
       maven_test_only: false
+      maven_goal: ${{ github.event_name == 'workflow_dispatch' && inputs.build_maven == true && (startsWith(github.ref, 'refs/heads/feature/') || startsWith(github.ref, 'refs/heads/future/')) && 'install' || 'deploy' }}
       maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
     secrets:
       GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
       CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+      MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+      MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
 
+  check-dockerfile:
+    needs: maven_test_build
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    name: Vérifier que Dockerfile ne contient plus MAVEN_PAT
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupération du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Vérification du contenu du Dockerfile
+        run: |
+          if [ -f Dockerfile ]; then
+            if grep -q "MAVEN_PAT" Dockerfile; then
+              echo "::error::Le fichier Dockerfile contient la chaîne interdite 'MAVEN_PAT'"
+              exit 1
+            else
+              echo " Dockerfile conforme"
+            fi
+          else
+            echo " Aucun Dockerfile trouvé, vérification ignorée"
+          fi
+
+  # Ce job sera lancé si c'est une action manuelle et que la variable build_image est vrai et que la branche est develop, release, hotfix, feature, future
+  # ou ce n'est pas une action manuelle que la branche est develop, release, hotfix
   docker_build_push:
     if: |
+      inputs.docker_build == true &&
       (
-        github.event_name == 'workflow_dispatch' &&
-        inputs.build_image == true
-      ) ||
-      github.event_name != 'workflow_dispatch'
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_image == true &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            startsWith(github.ref, 'refs/heads/release/')
+          )
+        ) ||
+        (
+          github.event_name != 'workflow_dispatch' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            startsWith(github.ref, 'refs/heads/release/')
+          )
+        )
+      )
+
     name: Docker build and push
     needs: maven_build
     uses: ./.github/workflows/jobs-docker.yml
@@ -140,6 +270,44 @@ jobs:
       docker_image_name: ${{ inputs.docker_image_name }}
       version_fallback: ${{ inputs.version_fallback }}
       environment_approved: ${{ inputs.environment_approved }}
+      project_name: ${{ inputs.project_name && format('{0}-', inputs.project_name) || '' }}
     secrets:
       docker_registry_user: ${{ secrets.docker_registry_user }}
       docker_registry_password: ${{ secrets.docker_registry_password }}
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  launch_release_product:
+    needs: maven_build
+    uses: ./.github/workflows/jobs-gitflow.yml
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      released: ${{ inputs.released }}
+      PRODUCT_RELEASE_VERSION: ${{ inputs.PRODUCT_RELEASE_VERSION }}
+      enabled_verification_changelog: ${{ inputs.enabled_verification_changelog }}
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      build_maven: ${{ inputs.build_maven }}
+      build_image: ${{ inputs.build_image }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  merge-hotfix-branch:
+    needs: check-dockerfile
+    uses: ./.github/workflows/jobs-hotfix-gitflow.yml
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      enabled_verification_changelog: ${{ inputs.enabled_verification_changelog }}
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      versioning_format: ${{ inputs.versioning_format }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+      MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+      MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}

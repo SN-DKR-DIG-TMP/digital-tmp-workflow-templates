@@ -73,13 +73,13 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
-      
+
     steps:
       - uses: actions/checkout@v3
 
       - name: Build with Maven
         run: mvn ${{ inputs.MAVEN_CLI_OPTS }} clean verify
-    
+
   build_and_test_and_deploy:
     name: 'Build test and deploy'
     if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/')
@@ -95,7 +95,7 @@ jobs:
 
       - name: Debug Filesystem
         run: find . -name "package.json"
-      
+
       - name: Debug deploy input
         run: |
           echo "Deploy: ${{ inputs.PUSH_ARTEFACT }}"
@@ -107,10 +107,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }} # Assuming GITHUB_TOKEN has packages:write permission
           GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
 
-      
+
       - name: Check generated dist for runner
         run: ls -l /workspace/dist
-        
+
       - name: Temporarily save jar artifact
         uses: actions/upload-artifact@v4
         with:
@@ -123,14 +123,14 @@ jobs:
     name: 'Initialize release project'
     if: (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/release/')) && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-      
+
     steps:
       - uses: actions/checkout@v3
 
       - name: Initialize release project
         run: |
           echo "Initialize release project"
-  
+
   gitflow:
     needs: release_project
     runs-on: ubuntu-latest
@@ -157,22 +157,22 @@ jobs:
         with:
             node-version: '20'  # Assure-toi d'utiliser une version compatible
             cache: 'npm'
-                
+
       - name: Vérifier les permissions
         run: chmod +w package.json package-lock.json
-      
+
       - name: Build authenticated repository URL
         run: |
           REPO_URL="https://${{ secrets.GITHUB_USERNAME }}:${{ secrets.CUSTOM_GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           echo "Authenticated repository URL: $REPO_URL"
-          echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV 
+          echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
 
       - name: Set safe directory
         run: |
           git config --global --add safe.directory /workspace
           git config --global --add safe.directory ${{ github.workspace }}
           git config --global --add safe.directory $GITHUB_WORKSPACE
-      
+
 
       - name: Configure git
         run: |
@@ -210,9 +210,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' 
+          node-version: '20'
           cache: 'npm'
-                
+
       - name: Vérifier les permissions
         run: chmod +w package.json package-lock.json
 
@@ -242,7 +242,7 @@ jobs:
           echo "Extracted version: $version"
           echo "VERSION=$version" >> $GITHUB_ENV
           echo "$version" > version.txt  # Crée le fichier version.txt
-    
+
       - name: Upload version
         if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
         uses: actions/upload-artifact@v4
@@ -260,7 +260,7 @@ jobs:
           echo "Extracted artifactId: $artifactId"
           echo "ARTIFACT_ID=$artifactId" >> $GITHUB_ENV
           echo "$artifactId" > artifactId.txt  # Crée le fichier artifactId.txt
-        
+
       - name: Upload artifactId
         if: ${{ inputs.DOCKER_IMAGE_NAME == ''}}
         uses: actions/upload-artifact@v4
@@ -271,7 +271,7 @@ jobs:
 
   build-and-push-image:
     env:
-      DOCKER_IMAGE_NAME: 
+      DOCKER_IMAGE_NAME:
       DOCKER_OWNER:
       VERSION:
     needs: docker-build-prepare
@@ -290,23 +290,23 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dist
-          path: ./
-  
+          path: dist
+
       - name: Check if dist exists
         run: ls -l ./
 
       - name: Download version artifact
         uses: actions/download-artifact@v4
         with:
-          name: version 
+          name: version
           path: ./
-      
+
       - name: Read version
         id: read-version
         run: |
           version=$(cat version.txt)
           echo "Version téléchargée : $version"
-          echo "VERSION=$version" >> $GITHUB_ENV 
+          echo "VERSION=$version" >> $GITHUB_ENV
 
       - name: Use version
         run: echo "La version récupérée est $VERSION"
@@ -315,7 +315,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: artifactid
-          path: ./ 
+          path: ./
 
       - name: Debug downloaded files
         run: |
@@ -325,16 +325,16 @@ jobs:
           cat ./artifactId.txt
           echo "Contents of artifactId.txt:"
           cat artifactId.txt
-        
+
       - name: Read artifactId
         run: |
           artifactId=$(cat artifactId.txt)
           echo "ArtifactId téléchargée : $artifactId"
-          echo "ARTIFACT_ID=$artifactId" >> $GITHUB_ENV 
-      
+          echo "ARTIFACT_ID=$artifactId" >> $GITHUB_ENV
+
       - name: Use artifactId
         run: echo "Artifact récupéré est $ARTIFACT_ID"
-        
+
       - name: Configurer les variables d’environnement
         run: |
           echo "VERSION=$VERSION" >> $GITHUB_ENV

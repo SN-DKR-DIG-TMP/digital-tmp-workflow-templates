@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: "manual-approval"
+      project_name:
+        description: 'Project name'
+        required: false
+        type: string
+        default: 'atos'
     secrets:
       docker_registry_user:
         description: 'User registry docker'
@@ -38,17 +43,20 @@ on:
       docker_registry_password:
         description: 'Password registry docker'
         required: true
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
 
 jobs:
 
   docker_build_project:
     name: 'Initialize docker build project'
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (
-        (github.ref == 'refs/heads/develop' && github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') ||
-        startsWith(github.ref, 'refs/heads/release/')
-      )
+      github.ref == 'refs/heads/develop' ||
+      startsWith(github.ref, 'refs/heads/release/')
     runs-on: ubuntu-latest
     steps:
       - name: Initialize docker build project
@@ -63,7 +71,7 @@ jobs:
       volumes:
         - ${{ github.workspace }}:/workspace
     if: |
-      (github.ref == 'refs/heads/develop' && github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') ||
+      github.ref == 'refs/heads/develop' ||
       startsWith(github.ref, 'refs/heads/release/')
     outputs:
       registry_img_name: ${{ steps.meta.outputs.registry_image_name }}
@@ -85,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
           GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
         with:
-          DOCKER_IMAGE_NAME: ${{ inputs.docker_image_name }}
+          DOCKER_IMAGE_NAME: ${{ inputs.project_name }}${{ inputs.docker_image_name }}
           IMAGE_REGISTRY: ${{ inputs.docker_registry }}/${{ inputs.docker_owner }}
           VERSION_FALLBACK: ${{ inputs.version_fallback }}
 
@@ -125,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: docker-build-prepare
     if: |
-      (github.ref == 'refs/heads/develop' && github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') ||
+      github.ref == 'refs/heads/develop' ||
       startsWith(github.ref, 'refs/heads/release/')
     steps:
       - uses: actions/checkout@v4

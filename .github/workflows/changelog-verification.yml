@@ -1,0 +1,86 @@
+name: Vérification et validation du changelog
+
+on:
+  workflow_call:
+    inputs:
+      versioning_format:
+        description: 'Format de version'
+        required: false
+        type: string
+        default: '9.9.9'
+      enabled_verification_changelog:
+        description: 'Activer ou désactiver la vérification'
+        required: false
+        type: boolean
+        default: false
+jobs:
+
+  check-changelog-initialize:
+    name: Initialize
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verification
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == feature/* ]]; then
+            echo "La vérification s'execute"
+          else
+            echo "La vérification est ignoré"
+          fi
+
+  check-changelog-modified:
+    needs: check-changelog-initialize
+    name: Check changelog
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'feature/') &&
+      inputs.enabled_verification_changelog == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout complet
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # cloner tout le repository
+
+      - name: Vérification des fichiers modifiés
+        run: |
+          echo " Comparaison entre ${GITHUB_BASE_REF} et ${GITHUB_HEAD_REF}"
+          CHANGED_FILES=$(git diff origin/${{ github.base_ref }}...origin/${{ github.head_ref }} --name-only)
+          echo "Fichiers modifiés :"
+          echo "$CHANGED_FILES"
+
+          if echo "$CHANGED_FILES" | grep -q "^CHANGELOG.md$"; then
+            echo " Le fichier CHANGELOG.md a bien été modifié"
+          else
+            echo "::error::Veuillez modifier le fichier CHANGELOG.md"
+            exit 1
+          fi
+
+  validate-changelog:
+    name: Validate CHANGELOG.md
+    needs: check-changelog-modified
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/sn-dkr-dig-tmp/digital-tmp-builder:openjdk21-latest
+      volumes:
+        - ${{ github.workspace }}:/workspace
+
+    steps:
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      - name: Vérification que le fichier existe
+        run: |
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::Fichier CHANGELOG.md introuvable"
+            exit 1
+          fi
+
+      - name: Linter keepachangelog
+        run: |
+          keepachangelog-linter CHANGELOG.md
+
+      - name: Linter markdown
+        run: |
+          markdownlint --config /usr/src/tools/markdownlint/.markdownlint.jsonc CHANGELOG.md
