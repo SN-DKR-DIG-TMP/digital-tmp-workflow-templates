@@ -11,6 +11,10 @@ on:
         required: false
         type: string
         default: ''
+      maven_goal:
+        required: false
+        type: string
+        default: 'test'
     secrets:
       CUSTOM_GITHUB_TOKEN:
         description: 'GitHub token for authentication'
@@ -55,7 +59,7 @@ jobs:
           if ${{ inputs.maven_test_only }}; then
             echo "goal=clean test" >> $GITHUB_OUTPUT
           else
-            echo "goal=clean deploy" >> $GITHUB_OUTPUT
+            echo "goal=clean ${{ inputs.maven_goal }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Maven
@@ -77,7 +81,7 @@ jobs:
         if: ${{ inputs.maven_test_only == true }}
         run: |
           find ./**/target* -name "*.jar" -delete
-          echo "✅ Fichiers .jar supprimés"
+          echo " Fichiers .jar supprimés"
 
       - name: Check generated JAR for runner
         run: |
