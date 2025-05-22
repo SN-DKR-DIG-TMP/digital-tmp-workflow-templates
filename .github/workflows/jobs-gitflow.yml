@@ -42,6 +42,10 @@ on:
         required: false
         type: boolean
         default: false
+      project_deployment_file_path:
+        description: 'Fichier de déploiement'
+        required: false
+        type: string
     secrets:
       CUSTOM_GITHUB_TOKEN:
         description: 'GitHub token for authentication'
@@ -144,6 +148,32 @@ jobs:
       - name: Définir la version Maven dans une variable d'environnement
         run: echo "PROJECT_VERSION=${{ steps.get-maven-version.outputs.version }}" >> $GITHUB_ENV
 
+      - name: Afficher les infos de contexte
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.ref: ${{ github.ref }}"
+          echo "inputs.build_image: ${{ inputs.build_image }}"
+          echo "inputs.build_maven: ${{ inputs.build_maven }}"
+          echo "inputs.released: ${{ inputs.released }}"
+          echo "branch name: ${{ github.ref_name }}"
+          echo "project_deployment_file_path: ${{ inputs.project_deployment_file_path }}"
+
+      - name: Mise à jour des fichiers de déploiement
+        if: |
+          inputs.project_deployment_file_path != '' &&
+          (endsWith(inputs.project_deployment_file_path, '.yml') || endsWith(inputs.project_deployment_file_path, '.yaml'))
+        run: |
+          ls
+          ls /workspace
+          FILE="${{ inputs.project_deployment_file_path }}"
+          echo " Fichier fourni : $FILE"
+
+          if [ -f "$FILE" ]; then
+            echo " Fichier existe, mise à jour en cours..."
+            sed -i -E 's/(image: .+:[0-9]+\.[0-9]+\.[0-9]+)-[a-zA-Z0-9._-]+/\1/g' "$FILE"
+          else
+            echo " Le fichier spécifié n’existe pas : $FILE"
+          fi
 
       - name: Mise à jour des fichiers package*.json avec la version du projet
         run: |

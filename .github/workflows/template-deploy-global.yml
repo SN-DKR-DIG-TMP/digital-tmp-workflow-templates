@@ -1,0 +1,139 @@
+name: Pipeline TMP
+
+on:
+  push:
+    branches:
+      - '**'  # écouter tous les push
+  pull_request:
+    branches:
+      - '**'  # écouter toutes les PR
+  workflow_call:
+    inputs:
+      MAVEN_CLI_OPTS:
+        description: 'Options maven'
+        required: false
+        type: string
+        default: "-s /root/.m2/settings.xml --batch-mode"
+      environment_approved:
+        description: 'environment for manual approved '
+        required: false
+        type: string
+        default: "manual-approval"
+      workflow_file:
+        description: 'Nom du fichier du workflow'
+        required: false
+        default: 'build.yml'
+        type: string
+      versioning_format:
+        description: 'Format de version'
+        required: false
+        type: string
+        default: '9.9.9'
+      PRODUCT_RELEASE_VERSION:
+        description: Version du projet à releaser
+        required: false
+        type: string
+        default: ""
+      released:
+        description: Indiquer si la release doit etre lancer
+        required: false
+        default: false
+        type: boolean
+      build_maven:
+        description: 'Enabled to build maven'
+        required: false
+        type: boolean
+        default: false
+      build_image:
+        description: 'Enabled to build docker image'
+        required: false
+        type: boolean
+        default: false
+      project_deployment_file_path:
+        description: 'Fichier de déploiement'
+        required: false
+        type: string
+    secrets:
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
+
+jobs:
+
+  check-variables:
+    name: Vérification des variables
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Afficher les infos de contexte
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.ref: ${{ github.ref }}"
+          echo "inputs.build_image: ${{ inputs.build_image }}"
+          echo "inputs.build_maven: ${{ inputs.build_maven }}"
+          echo "inputs.released: ${{ inputs.released }}"
+          echo "branch name: ${{ github.ref_name }}"
+          echo "environment_approved: ${{ inputs.environment_approved }}"
+          echo "project_deployment_file_path: ${{ inputs.project_deployment_file_path }}"
+
+      - name: Check environment approval protection
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/check-environment-approval@main
+        with:
+          github_token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          env_name: ${{ inputs.environment_approved }}
+
+  launch_release_product:
+    needs: check-variables
+    uses: ./.github/workflows/jobs-gitflow.yml
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      released: ${{ inputs.released }}
+      PRODUCT_RELEASE_VERSION: ${{ inputs.PRODUCT_RELEASE_VERSION }}
+      enabled_verification_changelog: false
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      build_maven: false
+      build_image: false
+      project_deployment_file_path: ${{ inputs.project_deployment_file_path }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  check-hotfix:
+    needs: check-variables
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    name: Vérifier si c'est un hotfix
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Vérification branche hotfix
+        run: |
+          echo " Branch is hotfix"
+
+
+  merge-hotfix-branch:
+    needs: check-hotfix
+    uses: ./.github/workflows/jobs-hotfix-gitflow.yml
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      enabled_verification_changelog: false
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      versioning_format: ${{ inputs.versioning_format }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+      MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+      MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
