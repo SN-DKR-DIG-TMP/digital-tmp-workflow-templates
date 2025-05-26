@@ -1,0 +1,237 @@
+name: Pipeline Build image docker
+
+on:
+  push:
+    branches:
+      - '**'  # écouter tous les push
+  pull_request:
+    branches:
+      - '**'  # écouter toutes les PR
+  workflow_call:
+    inputs:
+      MAVEN_CLI_OPTS:
+        description: 'Options maven'
+        required: false
+        type: string
+        default: "-s /root/.m2/settings.xml --batch-mode"
+      docker_registry:
+        description: 'Host registry docker'
+        required: true
+        type: string
+      docker_owner:
+        description: 'Owner docker'
+        required: true
+        type: string
+      docker_image_name:
+        description: 'Docker image name'
+        required: true
+        type: string
+      version_fallback:
+        description: 'Docker image name'
+        required: false
+        type: string
+        default: '1.0.0'
+      project_name:
+        description: 'Project name'
+        required: false
+        type: string
+      environment_approved:
+        description: 'environment for manual approved '
+        required: false
+        type: string
+        default: "manual-approval"
+      build_maven:
+        description: 'Enabled to build maven'
+        required: false
+        type: boolean
+        default: false
+      build_image:
+        description: 'Enabled to build docker image'
+        required: false
+        type: boolean
+        default: false
+      docker_build:
+        description: "Activation ou desactivation de build docker pour gerer les dependances qui n'ont pas besoin de builder une image"
+        required: false
+        type: boolean
+        default: true
+      workflow_file:
+        description: 'Nom du fichier du workflow'
+        required: false
+        default: 'build.yml'
+        type: string
+      versioning_format:
+        description: 'Format de version'
+        required: false
+        type: string
+        default: '9.9.9'
+      enabled_verification_changelog:
+        description: 'Activer ou désactiver la vérification'
+        required: false
+        type: boolean
+        default: false
+      PRODUCT_RELEASE_VERSION:
+        description: Version du projet à releaser
+        required: false
+        type: string
+        default: ""
+      released:
+        description: Indiquer si la release doit etre lancer
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      docker_registry_user:
+        description: 'User registry docker'
+        required: true
+      docker_registry_password:
+        description: 'Password registry docker'
+        required: true
+      CUSTOM_GITHUB_TOKEN:
+        description: 'GitHub token for authentication'
+        required: true
+      GITHUB_USERNAME:
+        description: 'GitHub username for authentication'
+        required: true
+      MAVEN_PAT:
+        description: 'GitHub MAVEN_PAT'
+        required: true
+      MAVEN_SETTINGS:
+        description: 'Maven settings'
+        required: false
+      MAVEN_SETTINGS_SECURITY:
+        description: 'Maven settings security'
+        required: false
+
+jobs:
+
+  check-variables:
+    name: Vérification des variables
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Afficher les infos de contexte
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.ref: ${{ github.ref }}"
+          echo "inputs.build_image: ${{ inputs.build_image }}"
+          echo "inputs.build_maven: ${{ inputs.build_maven }}"
+          echo "inputs.released: ${{ inputs.released }}"
+          echo "branch name: ${{ github.ref_name }}"
+          echo "environment_approved: ${{ inputs.environment_approved }}"
+
+  check-dockerfile:
+    needs: check-variables
+    name: Vérifier que Dockerfile ne contient plus MAVEN_PAT
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupération du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Vérification du contenu du Dockerfile
+        run: |
+          if [ -f Dockerfile ]; then
+            if grep -q "MAVEN_PAT" Dockerfile; then
+              echo "::error::Le fichier Dockerfile contient la chaîne interdite 'MAVEN_PAT'"
+              exit 1
+            else
+              echo " Dockerfile conforme"
+            fi
+          else
+            echo " Aucun Dockerfile trouvé, vérification ignorée"
+          fi
+
+    # Ce job sera lancé si c'est une action manuelle et que la variable build_image est vrai et que la branche est develop, release, hotfix, feature, future
+  # ou ce n'est pas une action manuelle que la branche est develop, release, hotfix
+  docker_build_push:
+    if: |
+      inputs.docker_build == true &&
+      (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_image == true &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            startsWith(github.ref, 'refs/heads/release/')
+          )
+        ) ||
+        (
+          github.event_name != 'workflow_dispatch' &&
+          (
+            github.ref == 'refs/heads/develop' ||
+            startsWith(github.ref, 'refs/heads/release/')
+          )
+        )
+      )
+
+    name: Docker build and push
+    needs: check-dockerfile
+    uses: ./.github/workflows/jobs-docker.yml
+    with:
+      docker_registry: ${{ inputs.docker_registry }}
+      docker_owner: ${{ inputs.docker_owner }}
+      docker_image_name: ${{ inputs.docker_image_name }}
+      version_fallback: ${{ inputs.version_fallback }}
+      environment_approved: ${{ inputs.environment_approved }}
+      project_name: ${{ inputs.project_name && format('{0}-', inputs.project_name) || '' }}
+    secrets:
+      docker_registry_user: ${{ secrets.docker_registry_user }}
+      docker_registry_password: ${{ secrets.docker_registry_password }}
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  launch_release_product:
+    needs: check-dockerfile
+    uses: ./.github/workflows/jobs-gitflow.yml
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      released: ${{ inputs.released }}
+      PRODUCT_RELEASE_VERSION: ${{ inputs.PRODUCT_RELEASE_VERSION }}
+      enabled_verification_changelog: false
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      build_maven: false
+      build_image: false
+      project_deployment_file_path: ${{ inputs.project_deployment_file_path }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+
+  check-hotfix:
+    needs: check-dockerfile
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    name: Vérifier si c'est un hotfix
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Vérification branche hotfix
+        run: |
+          echo " Branch is hotfix"
+
+
+  merge-hotfix-branch:
+    needs: check-hotfix
+    uses: ./.github/workflows/jobs-hotfix-gitflow.yml
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'hotfix') &&
+      github.base_ref != 'develop'
+    with:
+      maven_cli_opts: ${{ inputs.MAVEN_CLI_OPTS }}
+      enabled_verification_changelog: false
+      workflow_file: ${{ inputs.workflow_file }}
+      environment_approved: ${{ inputs.environment_approved }}
+      versioning_format: ${{ inputs.versioning_format }}
+    secrets:
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+      MAVEN_SETTINGS: ${{ secrets.MAVEN_SETTINGS }}
+      MAVEN_SETTINGS_SECURITY: ${{ secrets.MAVEN_SETTINGS_SECURITY }}
