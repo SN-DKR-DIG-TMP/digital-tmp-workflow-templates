@@ -80,6 +80,11 @@ on:
         required: false
         default: false
         type: boolean
+      TEAMS_WEBHOOK_URL:
+        description: 'URL du webhook Teams pour les alertes'
+        required: false
+        type: string
+        default: ''
     secrets:
       docker_registry_user:
         description: 'User registry docker'
@@ -102,6 +107,10 @@ on:
       MAVEN_SETTINGS_SECURITY:
         description: 'Maven settings security'
         required: false
+      TEAMS_WEBHOOK_URL:
+        description: 'URL du webhook Teams pour les alertes'
+        required: false
+
 
 jobs:
 
@@ -120,6 +129,16 @@ jobs:
           echo "inputs.released: ${{ inputs.released }}"
           echo "branch name: ${{ github.ref_name }}"
           echo "environment_approved: ${{ inputs.environment_approved }}"
+
+      - name: Envoyer alerte Teams
+        if: |
+          inputs.TEAMS_WEBHOOK_URL != '' &&
+          (
+            github.event_name == 'push' || github.event_name == 'pull_request'
+          )
+        uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/alert-commit@main
+        with:
+          teams_webhook_url: ${{ inputs.TEAMS_WEBHOOK_URL }}
 
       - name: Check environment approval protection
         uses: SN-DKR-DIG-TMP/digital-tmp-workflow-actions/actions/check-environment-approval@main
